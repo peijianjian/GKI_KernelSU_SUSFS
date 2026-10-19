@@ -1116,11 +1116,11 @@ jobs:
           bash "$TARGET_DIR/scripts/prepare_config.sh" "$TARGET_DIR" \
             "$KERNEL_ROOT/common" "$OUT_DIR"
 
-                    # 关键：从此以后所有特性步骤的 $DEFCONFIG 都指向我们的 .config，
-                    # 而不是源码树里的 gki_defconfig。这样 ZRAM/BBG/网络增强等步骤
-                    # 追加的 CONFIG 才会真正进入编译基线。
-                    echo "DEFCONFIG=$OUT_DIR/.config" >> $GITHUB_ENV
-                    echo "DEFCONFIG 已重定向 -> $OUT_DIR/.config"
+          # 关键：从此以后所有特性步骤的 $DEFCONFIG 都指向我们的 .config，
+          # 而不是源码树里的 gki_defconfig。这样 ZRAM/BBG/网络增强等步骤
+          # 追加的 CONFIG 才会真正进入编译基线。
+          echo "DEFCONFIG=$OUT_DIR/.config" >> $GITHUB_ENV
+          echo "DEFCONFIG 已重定向 -> $OUT_DIR/.config"
 
 
       - name: 配置 ZRAM LZ4 补丁栈
