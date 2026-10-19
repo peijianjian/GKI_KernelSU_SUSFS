@@ -12,10 +12,10 @@
 
 ## 二、两个仓库的角色
 
-| 仓库 | 角色 |
-|---|---|
+| 仓库                     | 角色                                                                                          |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
 | `GKI_KernelSU_SUSFS-dev` | **构建工厂**。上游 build.yml 产通用 GKI（gki_defconfig + bazel）。本任务加了 TB710FU 专用目标 |
-| `coloros-pad-fixes-main` | **原料库**（只读）。`kernel-compat/` 下有真机验证过的配置、补丁、ABI 门禁 |
+| `coloros-pad-fixes-main` | **原料库**（只读）。`kernel-compat/` 下有真机验证过的配置、补丁、ABI 门禁                     |
 
 ## 三、交付物清单（全部在 GKI 仓库内）
 
@@ -42,8 +42,11 @@ targets/tb710fu/
    gki_defconfig 缺原厂 3840 行 "is not set"；pad configs/README 记录过踩坑：追加式 → module_layout 0xea759d7f→0x28c5e94f → 289 模块全拒载、第一屏重启。
 2. **make 而非 bazel**
    bazel 的 --defconfig_fragment 装不下 7550 行；且强制 --lto=thin 与原厂 CONFIG_LTO_NONE=y 冲突。
-3. **编译必须用树内 clang**（prebuilts/clang/host/linux-x86/clang-r487747c ≈ 原厂 17.0.2）
-   workflow 编译步骤已显式加 PATH + CC="ccache clang"。
+3. **编译用原厂同代 clang（17.0.2 / clang-r487747c），但树里其实没有**
+   kernel/manifest 的 android14-6.1 manifest 在 root 上 `remove-project kernel/prebuilts/clang/host/linux-x86`，
+   repo sync 只拉 common/kernel/tools，不拉 clang。所以 workflow 自己装：`clang lld llvm`（+ 能拿到时用
+   GitHub llvm-project 预编译）→ 「校验 LLVM 工具链」→ 编译时若有树内 clang 仍优先用它。
+   历史：2026-10-19 那次 CI 挂在 `scripts/Kconfig.include:40: linker 'ld.lld' not found`，就是这么来的。
 4. **ABI 门禁 = module_layout CRC 哨兵 0xea759d7f**
    289 个厂商 .ko 进不了 CI，无法逐符号比对；KMI 分支内布局冻结 → 单一哨兵足够。pad 文档：r3 也是此值。
 5. **ColorOS 补丁排在 SUSFS 之后**
@@ -52,23 +55,25 @@ targets/tb710fu/
 
 ## 五、本轮修掉的坑（已验证修复，勿回退）
 
-| 坑 | 修复 |
-|---|---|
-| heredoc 顶格破坏 YAML 块标量（AK3/EOF） | 内容与结束符统一缩进 10 空格，YAML 还原后 bash 正确 |
-| PyYAML dump 把 `on:` 写成 `true:`、run 转义成单行字符串 | 弃用 dump，从提取的 JSON 手工发射块标量格式重建 |
-| 多行 `with:` 值（cache path/restore-keys）顶格 | 改 `|-` 块标量 |
-| 准备配置在特性步骤之后 → ZRAM/BBG/BBRv3 配置写进 gki_defconfig 丢失 | 准备配置移到所有特性步骤之前 + DEFCONFIG 重定向 |
-| 编译无树内 clang PATH / 无 ccache | 已加 CLANG_BIN 探测 + CC="ccache clang" |
-| patch 无 --batch 在 CI 挂起等 stdin | apply_patches.sh 全部 --batch，失败时 dry-run 输出冲突详情 |
-| apply_patches.sh 相对路径 cd 后失效 | 脚本入口 pwd 归一化 |
-| hooks 对缺失文件抛 Traceback | 改为友好 fail |
-| ZRAM 配置双写 + CONFIG_MODULE_SIG=n 破 ABI | 追加步骤 ZRAM 段删除，统一由「配置 ZRAM 选项」负责 |
-| prepare_config 覆盖 hooks 追加的白名单符号 | 白名单安装移到 apply_patches.sh（hooks 之前） |
+| 坑                                                                                                                | 修复                                                                                                                                          |
+| ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| heredoc 顶格破坏 YAML 块标量（AK3/EOF）                                                                           | 内容与结束符统一缩进 10 空格，YAML 还原后 bash 正确                                                                                           |
+| PyYAML dump 把 `on:` 写成 `true:`、run 转义成单行字符串                                                           | 弃用 dump，从提取的 JSON 手工发射块标量格式重建                                                                                               |
+| 多行 `with:` 值（cache path/restore-keys）顶格                                                                    | 改 `                                                                                                                                          |
+| 准备配置在特性步骤之后 → ZRAM/BBG/BBRv3 配置写进 gki_defconfig 丢失                                               | 准备配置移到所有特性步骤之前 + DEFCONFIG 重定向                                                                                               |
+| 编译无树内 clang PATH / 无 ccache                                                                                 | 已加 CLANG_BIN 探测 + CC="ccache clang"                                                                                                       |
+| **`linker 'ld.lld' not found`（2026-10-19 CI 实测）**：manifest 移除 clang 预编译，树内既无 clang 也无 ld.lld/gas | 新增「安装 LLVM 工具链」（apt clang/lld/llvm + 预编译回退 + `/usr/local/bin` 链接兜底）与「校验 LLVM 工具链」门禁；prepare_config.sh 也先自检 |
+| patch 无 --batch 在 CI 挂起等 stdin                                                                               | apply_patches.sh 全部 --batch，失败时 dry-run 输出冲突详情                                                                                    |
+| apply_patches.sh 相对路径 cd 后失效                                                                               | 脚本入口 pwd 归一化                                                                                                                           |
+| hooks 对缺失文件抛 Traceback                                                                                      | 改为友好 fail                                                                                                                                 |
+| ZRAM 配置双写 + CONFIG_MODULE_SIG=n 破 ABI                                                                        | 追加步骤 ZRAM 段删除，统一由「配置 ZRAM 选项」负责                                                                                            |
+| prepare_config 覆盖 hooks 追加的白名单符号                                                                        | 白名单安装移到 apply_patches.sh（hooks 之前）                                                                                                 |
 
 ## 六、本地已验证 / 未验证
 
 **已验证**（离线静态）：
-- workflow YAML 合法（15 inputs / 49 steps / on: 正常）
+
+- workflow YAML 合法（15 inputs / 51 steps / on: 正常）
 - 三个 shell 脚本 `bash -n`、hooks Python AST、manifest JSON
 - 补丁 `git apply --stat` 结构正确（0001=9文件56行，0002=6文件40行）
 - verify_abi.sh 正例（哨兵命中）/ 负例（0x28c5e94f 正确拦截，退出码1）
@@ -76,7 +81,11 @@ targets/tb710fu/
 - 步骤顺序、DEFCONFIG 引用面、文件交叉引用
 
 **未验证**（需第一次 Action 或真机）：
+
 - 真实编译能否通过（本环境无网络，git ls-remote/curl 被墙）
+- 新的 LLVM 安装步骤只做了 `bash -n` + 门禁失败路径测试；clang-18 编原厂配置是否会出现
+  `-Wincompatible-pointer-types` 之外的新报错、CONFIG_LTO_NONE 下 clang-18 的 bpf 目标是否可用，都要看下一次 Action
+- module_layout 哨兵是否会因换编译器而漂移（预期不漂：CRC 由类型/布局决定，与编译器版本无关）
 - **module_layout 实际 CRC 是否 = 0xea759d7f**（唯一关键验证；若不等 → 门禁拦截，日志给实际值）
 - SUSFS 补丁与 pad 补丁在 sched.h 是否冲突（pad 不用 SUSFS，建议用户默认不开）
 - AK3 `split_boot`/`flash_boot` 在 WildKernels gki-2.0 分支的行为、`device.name1=TB710FU` 是否匹配 ro.product.device
