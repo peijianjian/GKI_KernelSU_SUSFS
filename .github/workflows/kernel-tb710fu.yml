@@ -1421,6 +1421,51 @@ jobs:
           clang --version | head -n1
 
 
+            - name: 安装 LLVM 工具链
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y clang lld llvm
+
+          CLANG_MAJOR=$(clang --version | head -n1 | grep -oE '[0-9]+' | head -n1)
+          if [ -n "$CLANG_MAJOR" ] && [ "$CLANG_MAJOR" -gt 18 ]; then
+            RELEASE=$(curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+              "https://api.github.com/repos/llvm/llvm-project/releases?per_page=100" \
+              | grep -o '"tag_name": *"llvmorg-[0-9.]*"' \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1)
+            if [ -n "$RELEASE" ]; then
+              curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+                "https://github.com/llvm/llvm-project/releases/download/llvmorg-$RELEASE/LLVM-$RELEASE-Linux-X64.tar.xz" \
+                -o /tmp/llvm.tar.xz
+              sudo mkdir -p /opt/llvm
+              sudo tar -xJf /tmp/llvm.tar.xz -C /opt/llvm --strip-components=1
+              echo "/opt/llvm/bin" >> "$GITHUB_PATH"
+              exit 0
+            fi
+          fi
+
+          LLVM_BIN=$(dirname "$(readlink -f "$(command -v clang)")")
+          for bin in "$LLVM_BIN"/*; do
+            name=$(basename "$bin")
+            case "$name" in clang*|llvm-*|ld.lld|lld|lld-link) ;; *) continue ;; esac
+            sudo ln -sf "$bin" "/usr/local/bin/$name"
+          done
+          echo "已补齐 LLVM 工具链链接: $LLVM_BIN"
+
+
+      - name: 校验 LLVM 工具链
+        run: |
+          missing=0
+          for t in clang ld.lld llvm-ar llvm-strip llvm-nm llvm-objcopy \
+                   llvm-objdump llvm-readelf llvm-ranlib; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "  ok $t $(command -v "$t")"
+            else
+              echo "::error::缺少 $t"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          clang --version | head -n1
       - name: 编译内核
         run: |
           set -o pipefail
