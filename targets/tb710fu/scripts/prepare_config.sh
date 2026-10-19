@@ -38,8 +38,25 @@ echo "   delta : $(grep -cv '^#' "$DELTA" || true) 行有效项"
 echo "   合计  : $(wc -l < "$OUT_DIR/.config") 行"
 
 echo "== 2/3 olddefconfig =="
+# Kconfig 的编译器探测（scripts/Kconfig.include）用的是 ${LD}=ld.lld，
+# LLVM=1 编译同理。工具链不齐时这里会只甩一行 "linker 'ld.lld' not found"，
+# 看不出是 CI 缺工具，所以先自检；CC=ccache clang 与编译步骤保持一致。
+missing=0
+for t in clang ld.lld llvm-ar llvm-nm llvm-strip llvm-objcopy llvm-objdump; do
+    if command -v "$t" >/dev/null 2>&1; then
+        echo "   ✓ $t"
+    else
+        echo "::error::缺少 $t —— LLVM 工具链未装好（走 .github/workflows 的「安装 LLVM 工具链」）" >&2
+        missing=1
+    fi
+done
+if [ "$missing" -ne 0 ]; then
+    echo "::error::工具链自检失败，停止构建" >&2
+    exit 1
+fi
+
 cp "$OUT_DIR/.config" "$OUT_DIR/.config.pre-olddefconfig"
-make -C "$KERNEL_SRC" O="$OUT_DIR" ARCH=arm64 LLVM=1 olddefconfig
+make -C "$KERNEL_SRC" O="$OUT_DIR" ARCH=arm64 LLVM=1 CC="ccache clang" olddefconfig
 echo "   olddefconfig 完成"
 
 echo "== 3/3 关键配置断言 =="
