@@ -1,0 +1,56 @@
+{
+  "target": "tb710fu",
+  "display_name": "Lenovo Xiaoxin Pad Pro GT (TB710FU / SM8650Q / pineapple)",
+  "rom": "ColorOS 16 port (OPD2513)",
+  "android_version": "android14",
+  "kernel_version": "6.1",
+  "os_patch_level": "2025-03",
+  "kernel_full": "6.1.128",
+  "gki_build_id": "13606743",
+  "gki_commit": "5c2cea985a841939e6d074cbed2019dec0245fcd",
+  "config": {
+    "base": "targets/tb710fu/config/base.config",
+    "base_origin": "原厂 boot.img 用 scripts/extract-ikconfig 抠出的 .config，7550 行",
+    "delta": "targets/tb710fu/config/delta.config",
+    "whitelist": "targets/tb710fu/config/abi_symbollist.raw"
+  },
+  "patches": {
+    "order_file": "targets/tb710fu/patches/ordered.list",
+    "kernel_tree": [
+      "0001-gloom-percpu-code.patch",
+      "0002-sysvipc-kabi-slots.patch"
+    ],
+    "python_rewriters": [
+      "hooks/apply_oplus_hooks.py"
+    ],
+    "excluded": {
+      "reason": "以下补丁作用于一加 out-of-tree 模块源码，产物是 .ko（OplusBSP-Modules zip），不进入 Image",
+      "list": [
+        "oplus-hybridswap-fault-counter-scope.patch",
+        "oplus-hybridswap-panel-kprobe-fallback.patch",
+        "oplus-hybridswap-panel-real-blank-edge.patch",
+        "oplus-hybridswap-slowpath-wake-throttle.patch",
+        "oplus-hybridswap-zram-opt-callback.patch",
+        "oplus-proc-shared-dirs.patch",
+        "oplus-sched-info-hotthread-slab-ctor.patch",
+        "oplus-zram-opt-stock-swappiness.patch"
+      ]
+    }
+  },
+  "abi_gate": {
+    "module_layout_crc": "0xea759d7f",
+    "note": "KMI 冻结哨兵值。变了就代表 289 个厂商模块会全部拒载。"
+  },
+  "build": {
+    "system": "make",
+    "reason": "bazel 的 --defconfig_fragment 装不下 7550 行原厂基线，且强制 --lto=thin 与 CONFIG_LTO_NONE 冲突",
+    "lto": "none",
+    "toolchain": "llvm"
+  },
+  "flash": {
+    "artifact": "AnyKernel3",
+    "ramdisk_size": 0,
+    "note": "本机 boot.img 的 ramdisk size 为 0，通用 ramdisk 在 init_boot，第一阶段在 vendor_boot。AK3 必须用 split_boot 而非 dump_boot。",
+    "pairs_with": "vendor_boot-hyperSched-stub.img（需单独 fastboot 刷入，不在 AK3 包内）"
+  }
+}

@@ -1,0 +1,18 @@
+# TB710FU 内核树补丁应用顺序
+#
+# 每行一个补丁文件名（相对本目录），# 开头为注释。
+# 应用脚本只会处理这里列出的文件，不按文件名排序 —— 顺序显式声明，避免依赖缺失。
+#
+# 补丁冲突时脚本会直接 fail（不像通用 GKI 那样 || true 混过去）：
+# 这些补丁都是对着 6.1.128 @ 5c2cea985a84 的精确上下文写的，
+# 上下文对不上就代表源码版本没对准，继续编出来的东西不可信。
+
+# 1) gloom / pcppages 的 vendor hook + percpu 32KB + 四个符号导出
+#    触及 include/linux/percpu.h、include/trace/hooks/mm.h、drivers/android/vendor_hooks.c、
+#         mm/mmap.c、mm/page_alloc.c、mm/util.c、kernel/sysctl.c、security/min_addr.c、
+#         tools/lib/bpf/libbpf.c
+0001-gloom-percpu-code.patch
+
+# 2) SYSVIPC 移入 KABI 预留槽位，保住 module_layout CRC = 0xea759d7f
+#    必须在 gloom 之后：两者都碰导出符号表，顺序固定便于定位
+0002-sysvipc-kabi-slots.patch

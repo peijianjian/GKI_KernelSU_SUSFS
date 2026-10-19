@@ -1,0 +1,171 @@
+# TB710FU / GKI 6.1.128 @5c2cea985a84 内核补丁（2026-09-13）
+#
+# 前提：必须用【原厂内核】的 .config（TRIM_UNUSED_KSYMS=y + abi_symbollist.raw），
+#       不能用 r1+ 的 /proc/config.gz（那份 TRIM 是关的，会导致 65% 符号 CRC 与
+#       厂商模块对不上，module_layout 首先就不匹配，开机第一屏即重启）。
+#       唯一该改的配置是 MODULE_SIG_PROTECT=n。
+#
+# 1) PERCPU_MODULE_RESERVE 8KB -> 32KB：让 oplus_resctrl 与 game_opt 共存。
+# 2) gloom 的三个 vendor hook + mm/mmap.c 调用点。
+# 3) pcppages_opt 的 android_vh_drain_all_pages_bypass + mm/page_alloc.c 调用点。
+# 4) 导出 gloom 需要的四个符号（一加原版走高通 android_debug_symbol，缺头文件）。
+# 5) libbpf.c 主机工具补丁（仅 resolve_btfids）。
+# 另需把新增符号补进 abi_symbollist.raw，否则 TRIM 会裁掉它们。
+#
+--- a/include/linux/percpu.h
++++ b/include/linux/percpu.h
+@@ -14,7 +14,7 @@
+ 
+ /* enough to cover all DEFINE_PER_CPUs in modules */
+ #ifdef CONFIG_MODULES
+-#define PERCPU_MODULE_RESERVE		(8 << 10)
++#define PERCPU_MODULE_RESERVE		(32 << 10)
+ #else
+ #define PERCPU_MODULE_RESERVE		0
+ #endif
+--- a/include/trace/hooks/mm.h
++++ b/include/trace/hooks/mm.h
+@@ -13,6 +13,7 @@
+ struct folio;
+ struct page_vma_mapped_walk;
+ struct compact_control;
++struct vm_unmapped_area_info;
+ 
+ DECLARE_RESTRICTED_HOOK(android_rvh_shmem_get_folio,
+ 			TP_PROTO(struct shmem_inode_info *info, struct folio **folio),
+@@ -71,6 +72,26 @@
+ DECLARE_RESTRICTED_HOOK(android_rvh_meminfo_proc_show,
+ 	TP_PROTO(struct seq_file *m),
+ 	TP_ARGS(m), 1);
++/* pcppages_opt（async_reclaim_opt）：让模块决定直接回收后是否跳过 drain_all_pages。
++ * GKI 原树没有，一加自己加的，移植时补回。 */
++DECLARE_HOOK(android_vh_drain_all_pages_bypass,
++	TP_PROTO(gfp_t gfp_mask, unsigned int order, unsigned long alloc_flags,
++		int migratetype, unsigned long did_some_progress, bool *bypass),
++	TP_ARGS(gfp_mask, order, alloc_flags, migratetype, did_some_progress, bypass));
++/* gloom（CONFIG_VIRTUAL_RESERVE_MEMORY）：VA 保留区与碎片池。
++ * 一加 BSP 的 mport/mm/gloom 依赖这三个钩子，GKI 原树没有，移植时补回。
++ */
++DECLARE_HOOK(android_vh_get_from_fragment_pool,
++	TP_PROTO(struct mm_struct *mm, struct vm_unmapped_area_info *info,
++		unsigned long *addr),
++	TP_ARGS(mm, info, addr));
++DECLARE_HOOK(android_vh_exclude_reserved_zone,
++	TP_PROTO(struct mm_struct *mm, struct vm_unmapped_area_info *info),
++	TP_ARGS(mm, info));
++DECLARE_HOOK(android_vh_include_reserved_zone,
++	TP_PROTO(struct mm_struct *mm, struct vm_unmapped_area_info *info,
++		unsigned long *addr),
++	TP_ARGS(mm, info, addr));
+ DECLARE_HOOK(android_vh_exit_mm,
+ 	TP_PROTO(struct mm_struct *mm),
+ 	TP_ARGS(mm));
+--- a/drivers/android/vendor_hooks.c
++++ b/drivers/android/vendor_hooks.c
+@@ -250,6 +250,10 @@
+ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_meminfo_proc_show);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(android_rvh_meminfo_proc_show);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_exit_mm);
++EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_get_from_fragment_pool);
++EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_drain_all_pages_bypass);
++EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_exclude_reserved_zone);
++EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_include_reserved_zone);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_alloc_pages_slowpath);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_show_mem);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_print_slabinfo_header);
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -1828,8 +1828,21 @@
+ 	info.high_limit = arch_get_mmap_base(addr, mm->mmap_base);
+ 	info.align_mask = 0;
+ 	info.align_offset = 0;
++
++	/* gloom：先问碎片池要一段，命中直接返回 */
++	addr = 0;
++	trace_android_vh_get_from_fragment_pool(mm, &info, &addr);
++	if (addr)
++		return addr;
++
++	/* gloom：把 VA 保留区排除在本次搜索之外 */
++	trace_android_vh_exclude_reserved_zone(mm, &info);
++
+ 	addr = vm_unmapped_area(&info);
+ 
++	/* gloom：上面失败时，允许把保留区纳入再试一次 */
++	trace_android_vh_include_reserved_zone(mm, &info, &addr);
++
+ 	/*
+ 	 * A failed mmap() very likely causes application failure,
+ 	 * so fall back to the bottom-up function here. This scenario
+@@ -2192,6 +2205,8 @@
+ 
+ /* enforced gap between the expanding stack and other mappings. */
+ unsigned long stack_guard_gap = 256UL<<PAGE_SHIFT;
++/* gloom 需要读它（一加原版走高通 android_debug_symbol，缺头文件）。 */
++EXPORT_SYMBOL_GPL(stack_guard_gap);
+ 
+ static int __init cmdline_parse_stack_guard_gap(char *p)
+ {
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -5042,8 +5042,14 @@
+ 	 * Shrink them and try again
+ 	 */
+ 	if (!page && !drained) {
++		bool bypass_drain = false;
++
+ 		unreserve_highatomic_pageblock(ac, false);
+-		drain_all_pages(NULL);
++		/* pcppages_opt：模块可在此判定跳过全局 drain */
++		trace_android_vh_drain_all_pages_bypass(gfp_mask, order, alloc_flags,
++				ac->migratetype, *did_some_progress, &bypass_drain);
++		if (!bypass_drain)
++			drain_all_pages(NULL);
+ 		drained = true;
+ 		++retry_times;
+ 		goto retry;
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -372,6 +372,8 @@
+ 
+ 	return rnd << PAGE_SHIFT;
+ }
++/* gloom 需要它来复现 mmap 随机化基址。 */
++EXPORT_SYMBOL_GPL(arch_mmap_rnd);
+ 
+ static int mmap_is_legacy(struct rlimit *rlim_stack)
+ {
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -134,6 +134,8 @@
+ #if defined(HAVE_ARCH_PICK_MMAP_LAYOUT) || \
+     defined(CONFIG_ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT)
+ int sysctl_legacy_va_layout;
++/* gloom 需要读它（一加原版走高通 android_debug_symbol，缺头文件）。 */
++EXPORT_SYMBOL_GPL(sysctl_legacy_va_layout);
+ #endif
+ 
+ #endif /* CONFIG_SYSCTL */
+--- a/security/min_addr.c
++++ b/security/min_addr.c
+@@ -6,6 +6,9 @@
+ 
+ /* amount of vm to protect from userspace access by both DAC and the LSM*/
+ unsigned long mmap_min_addr;
++/* gloom 需要读它。一加原实现走高通 android_debug_symbol(ADS_MMAP_MIN_ADDR)，
++ * 那要 <soc/qcom/debug_symbol.h>（不在我们手里）。直接导出更干净。 */
++EXPORT_SYMBOL_GPL(mmap_min_addr);
+ /* amount of vm to protect from userspace using CAP_SYS_RAWIO (DAC) */
+ unsigned long dac_mmap_min_addr = CONFIG_DEFAULT_MMAP_MIN_ADDR;
+ /* amount of vm to protect from userspace using the LSM = CONFIG_LSM_MMAP_MIN_ADDR */
+--- a/tools/lib/bpf/libbpf.c
++++ b/tools/lib/bpf/libbpf.c
+@@ -10743,7 +10743,7 @@
+ 
+ 			if (s[0] == ':')
+ 				s++;
+-			next_path = strchr(s, ':');
++			next_path = (char *)strchr(s, ':');
+ 			seg_len = next_path ? next_path - s : strlen(s);
+ 			if (!seg_len)
+ 				continue;
