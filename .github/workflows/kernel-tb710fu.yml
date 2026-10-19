@@ -141,7 +141,6 @@ env:
   OS_PATCH_LEVEL: "2025-03"
   SUB_LEVEL: "128"
   GKI_COMMIT: "5c2cea985a841939e6d074cbed2019dec0245fcd"
-  ENABLE_SUSFS: "${{ inputs.ksu_mode == '关闭' }}"
 
 jobs:
   build:
@@ -166,7 +165,7 @@ jobs:
           echo "GKI commit  : $GKI_COMMIT"
           echo "KSU 变体    : ${{ inputs.kernelsu_variant }}"
           echo "KSU 模式    : ${{ inputs.ksu_mode }}"
-          echo "SUSFS       : $ENABLE_SUSFS"
+          echo "SUSFS       : ${{ inputs.ksu_mode == '关闭' }}"
           echo "KPM         : ${{ inputs.use_kpm }}"
           echo "ColorOS补丁 : ${{ inputs.apply_coloros_patches }}"
           echo "ZRAM 增强   : ${{ inputs.use_zram }}"
@@ -613,7 +612,7 @@ jobs:
               BRANCH="-s main"
               ;;
             "SukiSU")
-              if [ "$ENABLE_SUSFS" = "false" ]; then
+              if [ "${{ inputs.ksu_mode }}" != "关闭" ]; then
                 BRANCH="-s main"
               else
                 BRANCH="-s builtin"
@@ -757,7 +756,7 @@ jobs:
 
 
       - name: 克隆 SUSFS 源码
-        if: env.ENABLE_SUSFS == 'true'
+        if: inputs.ksu_mode == '关闭'
         run: |
           set -euo pipefail
 
@@ -836,7 +835,7 @@ jobs:
 
 
       - name: 记录 SUSFS 基线快照
-        if: inputs.export_susfs_patches && env.ENABLE_SUSFS == 'true' && inputs.ksu_mode != '禁用KSU' && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
+        if: inputs.export_susfs_patches && inputs.ksu_mode == '关闭' && inputs.ksu_mode != '禁用KSU' && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
           # 排除 .rej/.orig 和补丁文件本身：apply.sh 会把 SUSFS 补丁拷进 common/ 并留下 .rej
@@ -850,7 +849,7 @@ jobs:
 
 
       - name: 应用 SUSFS 补丁
-        if: env.ENABLE_SUSFS == 'true'
+        if: inputs.ksu_mode == '关闭'
         working-directory: ${{ env.KERNEL_ROOT }}
         env:
           ANDROID_VERSION: "${{ env.ANDROID_VERSION }}"
@@ -1047,7 +1046,7 @@ jobs:
 
 
       - name: 应用 Unicode 绕过修复
-        if: env.ENABLE_SUSFS == 'true'
+        if: inputs.ksu_mode == '关闭'
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
           # 上游 2023-11、2024-01、2024-03 月度分支已带 unicode 修复，
@@ -1274,7 +1273,7 @@ jobs:
           fi
 
           # SUSFS
-          if [ "$ENABLE_SUSFS" = "true" ]; then
+          if [ "${{ inputs.ksu_mode }}" = "关闭" ]; then
             for c in CONFIG_KSU_SUSFS=y \
                      CONFIG_KSU_SUSFS_SUS_PATH=y \
                      CONFIG_KSU_SUSFS_SUS_MOUNT=y \
