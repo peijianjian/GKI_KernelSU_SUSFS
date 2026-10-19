@@ -142,6 +142,17 @@ if grep -q '^ static int thaw_super_locked' "$SUSFS_PATCH" \
   SUPER_FS_H_REMOVED=1
 fi
 
+# 新版 SUSFS 主补丁在 namespace.c 的 internal.h 之后以 #include <trace/hooks/blk.h>
+# 为上下文插入 susfs_def.h。部分月度分支（如 6.1.128 @5c2cea985a84）已将该 include
+# 移到别处，导致 Hunk #1 失败。临时补回，打完补丁再还原。
+NAMESPACE_BLK_H_ADDED=""
+if grep -qF '#include <trace/hooks/blk.h>' "$SUSFS_PATCH" \
+  && ! grep -qF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+  echo "临时调整 namespace.c 上下文（补回 trace/hooks/blk.h）"
+  sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+  NAMESPACE_BLK_H_ADDED=1
+fi
+
 patch -p1 < "$SUSFS_PATCH" || true
 
 # 为尚未提供 SU 会话 FD 接口的 SukiSU/BakaSU 恢复旧版 exec hook 行为
@@ -257,6 +268,11 @@ if [[ -n "$SUPER_FS_H_REMOVED" ]] \
   && ! grep -qF '#include <trace/hooks/fs.h>' fs/super.c; then
   echo "还原 super.c 临时调整"
   sed -i '/^#include "internal.h"$/a #include <trace/hooks/fs.h>' fs/super.c
+fi
+
+if [[ -n "$NAMESPACE_BLK_H_ADDED" ]]; then
+  echo "还原 namespace.c 临时调整"
+  sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
 fi
 
 fix_missing_vm_flags_clear() {
