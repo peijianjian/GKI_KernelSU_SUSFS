@@ -1111,6 +1111,67 @@ jobs:
           fi
 
 
+      - name: 安装 LLVM 工具链
+        # kernel/manifest 的 android14-6.1 manifest 在 root 上写的是
+        # <remove-project name="kernel/prebuilts/clang/host/linux-x86"/>，
+        # 也就是 repo sync 根本不会拉 clang：树里既没有 prebuilts/clang，
+        # 也没有 prebuilts/gas/linux-x86，LLVM=1 只剩 runner 自带的 clang-18。
+        # 而 runner 没有 ld.lld / llvm-* 那套名字的链接，于是 Kconfig.include
+        # 的 ${LD} 探测直接报 "linker 'ld.lld' not found"（07-19 那次失败）。
+        # 所以这里自己装一份 clang + lld，并尽量对齐原厂的 clang 17.0.2。
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y clang lld llvm
+
+          # 系统 clang-18（≈ r522817）能编这段内核，但和原厂 17.0.2 差一代。
+          # 先在 GitHub 预编译里挑版本号最接近的大版本，挑不到就把系统那份
+          # 用 ld.lld/llvm-* 链接补齐——保证最后一定有 ld.lld、llvm-ar 等。
+          CLANG_MAJOR=$(clang --version | head -n1 | grep -oE '[0-9]+' | head -n1)
+          if [ -n "$CLANG_MAJOR" ] && [[ "$CLANG_MAJOR" -gt 18 ]]; then
+            RELEASE=$(curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+              "https://api.github.com/repos/llvm/llvm-project/releases?per_page=100" \
+              | grep -o '"tag_name": *"llvmorg-[0-9.]*"' \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1)
+            if [ -n "$RELEASE" ]; then
+              curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+                "https://github.com/llvm/llvm-project/releases/download/llvmorg-$RELEASE/LLVM-$RELEASE-Linux-X64.tar.xz" \
+                -o /tmp/llvm.tar.xz
+              sudo mkdir -p /opt/llvm
+              sudo tar -xJf /tmp/llvm.tar.xz -C /opt/llvm --strip-components=1
+              echo "/opt/llvm/bin" >> "$GITHUB_PATH"
+              echo "使用 GitHub 预编译 LLVM $RELEASE: /opt/llvm/bin"
+              exit 0
+            fi
+            echo "::warning::未找到 LLVM 预编译，沿用系统 clang"
+          fi
+
+          LLVM_BIN=$(dirname "$(readlink -f "$(command -v clang)")")
+          for bin in "$LLVM_BIN"/*; do
+            name=$(basename "$bin")
+            case "$name" in clang*|llvm-*|ld.lld|lld|lld-link) ;; *) continue ;; esac
+            sudo ln -sf "$bin" "/usr/local/bin/$name"
+          done
+          echo "已补齐 LLVM 工具链链接: $LLVM_BIN"
+
+
+      - name: 校验 LLVM 工具链
+        run: |
+          # Kconfig.include 里 try-run 用的是 ${LD}（=ld.lld）、${OBJCOPY}
+          # 等，缺一个都在 olddefconfig 阶段就炸，提前报得清楚些。
+          missing=0
+          for t in clang ld.lld llvm-ar llvm-strip llvm-nm llvm-objcopy \
+                   llvm-objdump llvm-readelf llvm-ranlib; do
+            if command -v "$t" >/dev/null 2>&1; then
+              printf '  ✓ %-14s %s\n' "$t" "$(command -v "$t")"
+            else
+              echo "::error::缺少 $t"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          clang --version | head -n1
+
+
       - name: 准备配置
         run: |
           bash "$TARGET_DIR/scripts/prepare_config.sh" "$TARGET_DIR" \
@@ -1358,67 +1419,6 @@ jobs:
           LOCAL="-android14-11-g$(echo $GKI_COMMIT | cut -c1-12)-ACLaniakea"
           sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"$LOCAL\"|" "$OUT_DIR/.config"
           echo "CONFIG_LOCALVERSION=\"$LOCAL\""
-
-
-      - name: 安装 LLVM 工具链
-        # kernel/manifest 的 android14-6.1 manifest 在 root 上写的是
-        # <remove-project name="kernel/prebuilts/clang/host/linux-x86"/>，
-        # 也就是 repo sync 根本不会拉 clang：树里既没有 prebuilts/clang，
-        # 也没有 prebuilts/gas/linux-x86，LLVM=1 只剩 runner 自带的 clang-18。
-        # 而 runner 没有 ld.lld / llvm-* 那套名字的链接，于是 Kconfig.include
-        # 的 ${LD} 探测直接报 "linker 'ld.lld' not found"（07-19 那次失败）。
-        # 所以这里自己装一份 clang + lld，并尽量对齐原厂的 clang 17.0.2。
-        run: |
-          set -euo pipefail
-          sudo apt-get install -y clang lld llvm
-
-          # 系统 clang-18（≈ r522817）能编这段内核，但和原厂 17.0.2 差一代。
-          # 先在 GitHub 预编译里挑版本号最接近的大版本，挑不到就把系统那份
-          # 用 ld.lld/llvm-* 链接补齐——保证最后一定有 ld.lld、llvm-ar 等。
-          CLANG_MAJOR=$(clang --version | head -n1 | grep -oE '[0-9]+' | head -n1)
-          if [ -n "$CLANG_MAJOR" ] && [[ "$CLANG_MAJOR" -gt 18 ]]; then
-            RELEASE=$(curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
-              "https://api.github.com/repos/llvm/llvm-project/releases?per_page=100" \
-              | grep -o '"tag_name": *"llvmorg-[0-9.]*"' \
-              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1)
-            if [ -n "$RELEASE" ]; then
-              curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
-                "https://github.com/llvm/llvm-project/releases/download/llvmorg-$RELEASE/LLVM-$RELEASE-Linux-X64.tar.xz" \
-                -o /tmp/llvm.tar.xz
-              sudo mkdir -p /opt/llvm
-              sudo tar -xJf /tmp/llvm.tar.xz -C /opt/llvm --strip-components=1
-              echo "/opt/llvm/bin" >> "$GITHUB_PATH"
-              echo "使用 GitHub 预编译 LLVM $RELEASE: /opt/llvm/bin"
-              exit 0
-            fi
-            echo "::warning::未找到 LLVM 预编译，沿用系统 clang"
-          fi
-
-          LLVM_BIN=$(dirname "$(readlink -f "$(command -v clang)")")
-          for bin in "$LLVM_BIN"/*; do
-            name=$(basename "$bin")
-            case "$name" in clang*|llvm-*|ld.lld|lld|lld-link) ;; *) continue ;; esac
-            sudo ln -sf "$bin" "/usr/local/bin/$name"
-          done
-          echo "已补齐 LLVM 工具链链接: $LLVM_BIN"
-
-
-      - name: 校验 LLVM 工具链
-        run: |
-          # Kconfig.include 里 try-run 用的是 ${LD}（=ld.lld）、${OBJCOPY}
-          # 等，缺一个都在 olddefconfig 阶段就炸，提前报得清楚些。
-          missing=0
-          for t in clang ld.lld llvm-ar llvm-strip llvm-nm llvm-objcopy \
-                   llvm-objdump llvm-readelf llvm-ranlib; do
-            if command -v "$t" >/dev/null 2>&1; then
-              printf '  ✓ %-14s %s\n' "$t" "$(command -v "$t")"
-            else
-              echo "::error::缺少 $t"
-              missing=1
-            fi
-          done
-          [ "$missing" -eq 0 ] || exit 1
-          clang --version | head -n1
 
 
       - name: 编译内核
