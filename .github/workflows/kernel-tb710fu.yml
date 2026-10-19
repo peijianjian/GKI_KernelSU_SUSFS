@@ -496,9 +496,11 @@ jobs:
 
           if [ "$ACTUAL" != "$GKI_COMMIT" ]; then
             echo "检测到 tip 与目标不一致，检出目标 commit"
-            git fetch --depth=1 origin "$GKI_COMMIT" || \
-              git fetch --unshallow origin || true
-            git checkout "$GKI_COMMIT"
+          # repo 子仓库没有 origin 远端，直接按 URL 拉
+            git fetch --depth=1 \
+              https://android.googlesource.com/kernel/common \
+              "$GKI_COMMIT" || true
+            git checkout -f "$GKI_COMMIT"
           fi
 
           ACTUAL=$(git rev-parse HEAD)
