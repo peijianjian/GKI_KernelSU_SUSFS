@@ -67,7 +67,8 @@ done
 
 echo "== 3/3 vendor hook 命名空间导出 =="
 # gloom 与 pcppages 的钩子必须在 vendor_hooks.c 里导出，否则一加模块链接时未定义。
-# 用精确列匹配：这些名字常互为前缀（android_vh_exclude_* / android_vh_include_*）。
+# tracepoint 在 Module.symvers 里的实际导出名为 __tracepoint_<name> /
+# __traceiter_<name>，不是裸 hook 名；这里同时检查两者。
 HOOKS=(
     android_vh_get_from_fragment_pool
     android_vh_exclude_reserved_zone
@@ -76,7 +77,8 @@ HOOKS=(
     android_vh_binder_proc_transaction_end
 )
 for h in "${HOOKS[@]}"; do
-    if awk -v s="$h" '$2==s{found=1} END{exit !found}' "$SYMVERS"; then
+    if awk -v s="__tracepoint_$h" '$2==s{found=1} END{exit !found}' "$SYMVERS" || \
+       awk -v s="__traceiter_$h" '$2==s{found=1} END{exit !found}' "$SYMVERS"; then
         echo "   ✓ $h"
     else
         echo "::warning::$h 未导出 —— 依赖它的 BSP 模块将加载失败" >&2
@@ -90,16 +92,24 @@ echo "== 白名单覆盖检查 =="
 echo "   Module.symvers 导出符号数：$(wc -l < "$SYMVERS")"
 
 # 白名单里的符号若在新版源码中已不存在，TRIM 阶段会告警甚至失败。
-# 这里只报告数量，不判失败 —— 与 6.1.128 原厂基线对齐时应当为 0。
+# 这里报告数量，并把前 40 个缺失符号列出来供诊断。
 WHITELIST="${TARGET_DIR:-}/config/abi_symbollist.raw"
 if [ -f "$WHITELIST" ]; then
     missing=0
+    missing_list=""
     while IFS= read -r sym; do
         [ -n "$sym" ] || continue
-        awk -v s="$sym" '$2==s{found=1} END{exit !found}' "$SYMVERS" || missing=$((missing + 1))
+        if ! awk -v s="$sym" '$2==s{found=1} END{exit !found}' "$SYMVERS"; then
+            missing=$((missing + 1))
+            if [ "$missing" -le 40 ]; then
+                missing_list="$missing_list$sym\n"
+            fi
+        fi
     done < "$WHITELIST"
     echo "   白名单 $(wc -l < "$WHITELIST") 条，导出缺失 $missing 条"
     if [ "$missing" -gt 0 ]; then
+        echo "   缺失符号示例（前 40 条）："
+        printf '     %s\n' $(printf "$missing_list" | head -40)
         echo "::warning::白名单有 $missing 条符号未被导出，TRIM 阶段可能告警"
     fi
 fi
