@@ -333,6 +333,7 @@ jobs:
             tb710fu-ccache-
 
       - name: 缓存工具链
+        id: cache-toolchain
         uses: actions/cache@v5
         with:
           path: |-
@@ -345,6 +346,10 @@ jobs:
         run: |
           AOSP_MIRROR=https://android.googlesource.com
           BRANCH=main-kernel-build-2024
+          # 幂等：缓存命中但 clone 未跳过时，目录可能已存在。
+          # 之前这里少了 id: cache-toolchain，缓存命中后仍执行 clone，
+          # 报 "destination path already exists and is not an empty directory"。
+          rm -rf kernel-build-tools mkbootimg
           git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools
           git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg
 
